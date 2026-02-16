@@ -32,8 +32,42 @@ Provides the agent with knowledge about:
 
 ### hooks-dlp-monitor/
 Active hook that monitors command events and logs alerts when:
-- Potentially exfiltrating commands are detected
+
+- Potentially exfiltrating commands are detected (curl, wget, ssh, scp, etc.)
+- Sensitive data detected in tool outputs (credit cards, SSN, API keys, etc.)
+- Sensitive data detected in session messages (credit cards, SSN, etc. via hourly cron scan)
 - Logs to `~/.openclaw/logs/dlp-alerts.log`
+
+### hooks-dlp-monitor/scan-sessions.js
+Session scanner that runs hourly via system cron to scan recent session files for sensitive data. Catches sensitive information in messages even when no tools are executed.
+
+## Sensitive Data Patterns Detected
+
+### Credentials & Secrets
+- AWS Access Keys: `AKIA[0-9A-Z]{16}`
+- Private Keys: `-----BEGIN (RSA|DSA|EC|OPENSSH) PRIVATE KEY-----`
+- Generic Secrets: `password=`, `secret=`, `api_key=`, `apikey=`
+- JWT Tokens
+- Bearer Tokens
+- GitHub Tokens: `gh[pousr]_...`
+- Slack Tokens: `xox[baprs]-...`
+
+### Financial Data
+- Credit Cards: Visa, Mastercard, Amex, Discover formats
+- Bank Account Numbers: 8-17 digit numbers
+- Routing Numbers: 9-digit numbers
+
+### PII (Personally Identifiable Information)
+- SSN: `XXX-XX-XXXX` format
+- Email Addresses
+- Phone Numbers
+- Passport Numbers
+- Driver's License Numbers
+- Dates of Birth
+
+### Healthcare Data
+- Medical Record Numbers (MRN)
+- Insurance Policy Numbers
 
 ## View Alerts
 

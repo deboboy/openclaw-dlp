@@ -40,6 +40,8 @@ const EXFILTRATION_TOOLS = [
   "netcat",
 ];
 
+const MAX_SESSION_MESSAGES_TO_SCAN = 10;
+
 function detectSensitiveData(content) {
   if (!content || typeof content !== "string") return [];
   
@@ -65,53 +67,129 @@ function checkForExfiltrationTool(toolName) {
   return EXFILTRATION_TOOLS.find(cmd => lower.includes(cmd)) || null;
 }
 
-const dlpHandler = (toolResult) => {
+function getMessageContent(message) {
+  if (!message) return "";
+  if (typeof message === "string") return message;
+  if (typeof message.content === "string") return message.content;
+  if (Array.isArray(message.content)) {
+    return message.content.map(c => c.text || "").join(" ");
+  }
+  return JSON.stringify(message);
+}
+
+function getMessageRole(message) {
+  if (!message) return "unknown";
+  if (message.role) return message.role;
+  return "unknown";
+}
+
+async function getRecentSessionMessages(sessionKey, agentId = "main") {
+  if (!sessionKey || sessionKey === "unknown") return [];
+  
+  try {
+    const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
+    const sessionsDir = path.join(stateDir, "agents", agentId, "sessions");
+    
+    const sessionFile = path.join(sessionsDir, `${sessionKey}.jsonl`);
+    
+    const content = await fs.readFile(sessionFile, "utf-8");
+    const lines = content.trim().split("\n");
+    
+    const recentLines = lines.slice(-MAX_SESSION_MESSAGES_TO_SCAN);
+    const messages = [];
+    
+    for (const line of recentLines) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.message && entry.message.role) {
+          messages.push(entry.message);
+        }
+      } catch {
+        // Skip invalid JSON lines
+      }
+    }
+    
+    return messages;
+  } catch (err) {
+    console.log("[dlp-monitor] Could not read session messages:", err.message);
+    return [];
+  }
+}
+
+function logAlert(alert) {
+  const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
+  const logDir = path.join(stateDir, "logs");
+  
+  fs.mkdir(logDir, { recursive: true }).then(async () => {
+    const logFile = path.join(logDir, "dlp-alerts.log");
+    const timestamp = new Date().toISOString();
+    
+    const logLine = JSON.stringify({ ...alert, timestamp }) + "\n";
+    await fs.appendFile(logFile, logLine, "utf-8");
+    console.log(`[dlp-monitor] ALERT LOGGED: ${alert.event}`);
+  }).catch(err => {
+    console.error("[dlp-monitor] File write error:", err);
+  });
+}
+
+const dlpHandler = async (toolResult) => {
   console.log("[dlp-monitor] Tool result hook triggered!", JSON.stringify({
     tool: toolResult.tool,
     hasContent: !!toolResult.result?.content
   }));
   
+  const sessionKey = toolResult.sessionKey || "unknown";
+  const alerts = [];
+  
   try {
     const toolName = toolResult.tool;
     const content = toolResult.result?.content;
     
-    if (!content) return toolResult;
-    
-    const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
-    
-    const exfilTool = checkForExfiltrationTool(toolName);
-    const sensitiveFindings = detectSensitiveData(contentStr);
-    
-    if (exfilTool || sensitiveFindings.length > 0) {
-      console.log("[dlp-monitor] Detection!", { exfilTool, sensitiveFindings });
+    if (content) {
+      const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
       
-      const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), ".openclaw");
-      const logDir = path.join(stateDir, "logs");
+      const exfilTool = checkForExfiltrationTool(toolName);
+      const sensitiveFindings = detectSensitiveData(contentStr);
       
-      try {
-        fs.mkdir(logDir, { recursive: true }).then(async () => {
-          const logFile = path.join(logDir, "dlp-alerts.log");
-          const timestamp = new Date().toISOString();
-          
-          const alert = {
-            timestamp,
-            event: exfilTool ? "potential_exfiltration_command" : "sensitive_data_detected",
-            tool: toolName,
-            exfiltrationTool: exfilTool,
-            sensitivePatterns: sensitiveFindings,
-            sessionKey: toolResult.sessionKey || "unknown"
-          };
-          
-          const logLine = JSON.stringify(alert) + "\n";
-          await fs.appendFile(logFile, logLine, "utf-8");
-          console.log(`[dlp-monitor] ALERT LOGGED: ${alert.event}`);
-        }).catch(err => {
-          console.error("[dlp-monitor] File write error:", err);
+      if (exfilTool || sensitiveFindings.length > 0) {
+        console.log("[dlp-monitor] Detection in tool result!", { exfilTool, sensitiveFindings });
+        
+        alerts.push({
+          event: exfilTool ? "potential_exfiltration_command" : "sensitive_data_in_tool_output",
+          tool: toolName,
+          exfiltrationTool: exfilTool,
+          sensitivePatterns: sensitiveFindings,
+          sessionKey
         });
-      } catch (err) {
-        console.error("[dlp-monitor] Error:", err);
       }
     }
+    
+    const recentMessages = await getRecentSessionMessages(sessionKey);
+    
+    for (const message of recentMessages) {
+      const msgContent = getMessageContent(message);
+      const msgRole = getMessageRole(message);
+      
+      if (msgRole === "user" || msgRole === "assistant") {
+        const findings = detectSensitiveData(msgContent);
+        
+        if (findings.length > 0) {
+          console.log(`[dlp-monitor] Sensitive data in session ${msgRole} message!`, findings);
+          
+          alerts.push({
+            event: "sensitive_data_in_message",
+            messageRole: msgRole,
+            sensitivePatterns: findings,
+            sessionKey
+          });
+        }
+      }
+    }
+    
+    for (const alert of alerts) {
+      logAlert(alert);
+    }
+    
   } catch (err) {
     console.error("[dlp-monitor] Handler error:", err);
   }

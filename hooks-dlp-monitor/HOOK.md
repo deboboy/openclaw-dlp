@@ -1,6 +1,6 @@
 ---
 name: dlp-monitor
-description: "Monitor tool outputs for sensitive data patterns and potential data exfiltration"
+description: "Monitor tool outputs and session messages for sensitive data patterns and potential data exfiltration"
 metadata:
   {
     "openclaw":
@@ -14,18 +14,20 @@ metadata:
 
 # DLP Monitor Hook
 
-Monitors tool execution outputs for sensitive data patterns that could indicate data loss.
+Monitors tool execution outputs AND recent session messages for sensitive data patterns that could indicate data loss.
 
 ## What It Does
 
-1. **Monitors all tool executions** - Triggers after each tool runs
-2. **Detects sensitive data patterns** in tool outputs:
+1. **Monitors all tool executions** - Triggers when a tool result is persisted
+2. **Scans recent session messages** - Checks the last 10 messages in the session for sensitive data (user and assistant messages)
+3. **Detects sensitive data patterns** in tool outputs and session messages:
    - Credentials & Secrets (API keys, tokens, passwords)
    - Financial Data (credit cards, bank accounts, routing numbers)
    - PII (SSN, email, phone, passport, driver's license)
    - Medical/Healthcare (medical record numbers, insurance info)
-3. **Detects exfiltration commands** - curl, wget, ssh, scp, etc.
-4. **Logs alerts** to `~/.openclaw/logs/dlp-alerts.log`
+4. **Detects exfiltration commands** - curl, wget, ssh, scp, etc.
+5. **Logs alerts** to `~/.openclaw/logs/dlp-alerts.log`
+6. **Hourly cron scan** - Scans recent session files for sensitive data (runs via system cron)
 
 ## Sensitive Data Patterns Detected
 
@@ -58,7 +60,15 @@ Monitors tool execution outputs for sensitive data patterns that could indicate 
 ## Log Format
 
 ```json
-{"timestamp":"2026-01-16T14:30:00.000Z","event":"sensitive_data_detected","tool":"exec","sensitivePatterns":[{"pattern":"credit_card","count":1}],"sessionKey":"agent:main:main"}
+{"timestamp":"2026-01-16T14:30:00.000Z","event":"sensitive_data_in_tool_output","tool":"exec","sensitivePatterns":[{"pattern":"credit_card","count":1}],"sessionKey":"agent:main:main"}
+```
+
+```json
+{"timestamp":"2026-01-16T14:30:00.000Z","event":"sensitive_data_in_message","messageRole":"user","sensitivePatterns":[{"pattern":"credit_card","count":1}],"sessionKey":"agent:main:main"}
+```
+
+```json
+{"timestamp":"2026-01-16T14:30:00.000Z","event":"sensitive_data_in_session_scan","messageRole":"user","sensitivePatterns":[{"pattern":"credit_card_with_separator","count":1}],"sessionKey":"agent:main:main","source":"cron-session-scan"}
 ```
 
 ```json
@@ -75,6 +85,13 @@ Enable the hook:
 
 ```bash
 openclaw hooks enable dlp-monitor
+```
+
+Set up the hourly session scanner (recommended for catching sensitive data in messages):
+
+```bash
+# Add system cron job to run hourly
+echo "0 * * * * root cd /root/.openclaw/hooks/dlp-monitor && node scan-sessions.js >> /var/log/dlp-scan.log 2>&1" | sudo tee /etc/cron.d/dlp-monitor
 ```
 
 View alerts:
